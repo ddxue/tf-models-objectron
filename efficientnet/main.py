@@ -201,7 +201,7 @@ flags.DEFINE_string(
           ' CPU or TPU, channels_last should be used. For GPU, channels_first'
           ' will improve performance.'))
 flags.DEFINE_integer(
-    'num_label_classes', default=1000, help='Number of classes, at least 2')
+    'num_label_classes', default=18, help='Number of classes, at least 2')
 
 flags.DEFINE_float(
     'batch_norm_momentum',
@@ -244,10 +244,6 @@ flags.DEFINE_float(
 flags.DEFINE_float(
     'weight_decay', default=1e-5,
     help=('Weight decay coefficiant for l2 regularization.'))
-
-flags.DEFINE_float(
-    'label_smoothing', default=0.1,
-    help=('Label smoothing parameter used in the softmax_cross_entropy'))
 
 flags.DEFINE_float(
     'dropout_rate', default=None,
@@ -407,14 +403,12 @@ def model_fn(features, labels, mode, params):
   # size flags (--train_batch_size or --eval_batch_size).
   batch_size = params['batch_size']   # pylint: disable=unused-variable
 
-  # Calculate loss, which includes softmax cross entropy and L2 regularization.
-  cross_entropy = tf.losses.softmax_cross_entropy(
-      logits=logits,
-      onehot_labels=labels,
-      label_smoothing=FLAGS.label_smoothing)
+  # Calculate loss, which includes MSE and L2 regularization.
+  mse_loss = tf.reduce_sum(
+    tf.losses.mean_squared_error(labels=labels, predictions=logits))
 
   # Add weight decay to the loss for non-batch-normalization variables.
-  loss = cross_entropy + FLAGS.weight_decay * tf.add_n(
+  loss = mse_loss + FLAGS.weight_decay * tf.add_n(
       [tf.nn.l2_loss(v) for v in tf.trainable_variables()
        if 'batch_normalization' not in v.name])
 

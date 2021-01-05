@@ -22,6 +22,7 @@ import abc
 import collections
 import functools
 import os
+import numpy as np
 
 from absl import logging
 import six
@@ -69,7 +70,7 @@ class ObjectronTFExampleInput(six.with_metaclass(abc.ABCMeta, object)):
                image_size=224,
                num_parallel_calls=24,
                transpose_input=False,
-               num_label_classes=1000,
+               num_label_classes=18,
                include_background_label=False,
                augment_name=None,
                mixup_alpha=0.0,
@@ -85,7 +86,7 @@ class ObjectronTFExampleInput(six.with_metaclass(abc.ABCMeta, object)):
       image_size: `int` for image size (both width and height).
       num_parallel_calls: concurrency level to use when reading data from disk.
       transpose_input: 'bool' for whether to use the double transpose trick
-      num_label_classes: number of label classes. Default to 1000 for Objectron.
+      num_label_classes: number of label classes. Default to 18 for Objectron.
       include_background_label: If true, label #0 is reserved for background.
       augment_name: `string` that is the name of the augmentation method to
         apply to the image. `autoaugment` if AutoAugment is to be used or
@@ -172,18 +173,21 @@ class ObjectronTFExampleInput(six.with_metaclass(abc.ABCMeta, object)):
     Returns:
       Returns a tuple of (image, label) from the TFExample.
     """
+    # The 3D bounding box has 9 vertices, 0: is the center, and the 8 vertices of the 3D box.
+    NUM_KEYPOINTS = 9
+    NUM_CHANNELS = 3
+
     parsed = tf.parse_single_example(value, features = features.FEATURE_MAP)
-    # image_bytes = tf.image.decode_png(parsed[features.FEATURE_NAMES['IMAGE_ENCODED']], channels=self.num_channels)
     image_bytes = tf.reshape(parsed[features.FEATURE_NAMES['IMAGE_ENCODED']], shape=[])
-    image_shape = tf.convert_to_tensor([
+    original_shape = tf.convert_to_tensor([
       tf.reshape(parsed[features.FEATURE_NAMES['IMAGE_HEIGHT']], shape=[]),
       tf.reshape(parsed[features.FEATURE_NAMES['IMAGE_WIDTH']], shape=[]),
-      3,
+      NUM_CHANNELS,
     ], dtype=tf.int32)
-
+    
     image = self.image_preprocessing_fn(
         image_bytes=image_bytes,
-        image_shape=image_shape,
+        original_shape=original_shape,
         is_training=self.is_training,
         image_size=self.image_size,
         use_bfloat16=self.use_bfloat16,
@@ -192,17 +196,27 @@ class ObjectronTFExampleInput(six.with_metaclass(abc.ABCMeta, object)):
         randaug_magnitude=self.randaug_magnitude,
         resize_method=self.resize_method)
 
-    # The labels will be in range [1,1000], 0 is reserved for background
-    label = tf.cast(
-        tf.reshape(1, shape=[]), dtype=tf.int32)
+    # import pdb; pdb.set_trace()
+    # number_objects_batch is a tensor of shape (batch-size,) which tells the 
+    # number of objects in each batch slice.
+    num_objects = tf.reduce_sum(parsed[features.FEATURE_NAMES['INSTANCE_NUM']])
+    keypoints = tf.reshape(parsed[features.FEATURE_NAMES['POINT_2D']].values, [num_objects, NUM_KEYPOINTS, 3])
 
-    if not self.include_background_label:
-      # Subtract 1 if the background label is discarded.
-      label -= 1
+    # The object annotation is a list of 3x1 keypoints for all the annotated
+    # objects. The objects can have a varying number of keypoints. First we split
+    # the list according to the number of keypoints for each object. This
+    # also leaves an empty array at the end of the list.
+    # object_keypoints = tf.split(keypoints, num_objects)
 
-    onehot_label = tf.one_hot(label, self.num_label_classes)
+    # The keypoints are [x, y, d] where `x` and `y` are normalized (`uv`-system)\
+    # and `d` is the metric distance from the center of the camera. Convert them
+    # keypoint's `xy` value to pixel.
+    first_keypoints = keypoints[0, :, :2]
 
-    return image, onehot_label
+    # Flatten the labels into a (18,) tensor representing the 9x2 normalized keypoints.
+    label = tf.reshape(first_keypoints, shape=[-1])
+    print(label)
+    return image, label
 
   @abc.abstractmethod
   def make_source_dataset(self, index, num_hosts):
@@ -310,7 +324,7 @@ class ObjectronInput(ObjectronTFExampleInput):
                image_size=224,
                num_parallel_calls=24,
                cache=False,
-               num_label_classes=1000,
+               num_label_classes=18,
                include_background_label=False,
                augment_name=None,
                mixup_alpha=0.0,
@@ -331,7 +345,7 @@ class ObjectronInput(ObjectronTFExampleInput):
       image_size: `int` for image size (both width and height).
       num_parallel_calls: concurrency level to use when reading data from disk.
       cache: if true, fill the dataset by repeating from its cache.
-      num_label_classes: number of label classes. Default to 1000 for Objectron.
+      num_label_classes: number of label classes. Default to 18 for Objectron.
       include_background_label: if true, label #0 is reserved for background.
       augment_name: `string` that is the name of the augmentation method
           to apply to the image. `autoaugment` if AutoAugment is to be used or
@@ -383,7 +397,7 @@ class ObjectronInput(ObjectronTFExampleInput):
   def dataset_parser(self, value):
     """See base class."""
     if not self.data_dir:
-      return value, tf.constant(0., tf.float32, (1000,))
+      return value, tf.constant(0., tf.float32, (18,))
     return super(ObjectronInput, self).dataset_parser(value)
 
   def make_source_dataset(self, index, num_hosts):
@@ -454,7 +468,7 @@ class ObjectronBigtableInput(ObjectronTFExampleInput):
                transpose_input,
                selection,
                augment_name=None,
-               num_label_classes=1000,
+               num_label_classes=18,
                include_background_label=False,
                mixup_alpha=0.0,
                randaug_num_layers=None,
@@ -472,7 +486,7 @@ class ObjectronBigtableInput(ObjectronTFExampleInput):
           `randaugment` if RandAugment is to be used. If the value is `None` no
           no augmentation method will be applied applied. See autoaugment.py
           for more details.
-      num_label_classes: number of label classes. Default to 1000 for Objectron.
+      num_label_classes: number of label classes. Default to 18 for Objectron.
       include_background_label: if true, label #0 is reserved for background.
       mixup_alpha: float to control the strength of Mixup regularization, set
           to 0.0 to disable.

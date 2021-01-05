@@ -27,7 +27,7 @@ CROP_PADDING = 32
 
 
 def distorted_bounding_box_crop(image_bytes,
-                                image_shape,
+                                original_shape,
                                 bbox,
                                 min_object_covered=0.1,
                                 aspect_ratio_range=(0.75, 1.33),
@@ -40,7 +40,7 @@ def distorted_bounding_box_crop(image_bytes,
 
   Args:
     image_bytes: `Tensor` of binary image data.
-    image_shape: `Tensor` specifying the shape of the raw image.
+    original_shape: `Tensor` specifying the shape of the raw image.
     bbox: `Tensor` of bounding boxes arranged `[1, num_boxes, coords]`
         where each coordinate is [0, 1) and the coordinates are arranged
         as `[ymin, xmin, ymax, xmax]`. If num_boxes is 0 then use the whole
@@ -60,9 +60,8 @@ def distorted_bounding_box_crop(image_bytes,
     cropped image `Tensor`
   """
   with tf.name_scope(scope, 'distorted_bounding_box_crop', [image_bytes, bbox]):
-    # shape = tf.image.extract_jpeg_shape(image_bytes)
     sample_distorted_bounding_box = tf.image.sample_distorted_bounding_box(
-        image_shape,
+        original_shape,
         bounding_boxes=bbox,
         min_object_covered=min_object_covered,
         aspect_ratio_range=aspect_ratio_range,
@@ -74,8 +73,6 @@ def distorted_bounding_box_crop(image_bytes,
     # Crop the image to the specified bounding box.
     offset_y, offset_x, _ = tf.unstack(bbox_begin)
     target_height, target_width, _ = tf.unstack(bbox_size)
-    # crop_window = tf.stack([offset_y, offset_x, target_height, target_width])
-    # image = tf.image.decode_and_crop_jpeg(image_bytes, crop_window, channels=3)
     image = tf.image.decode_image(image_bytes, channels=3)
     image = tf.image.crop_to_bounding_box(image, offset_y, offset_x, target_height, target_width)
 
@@ -97,33 +94,33 @@ def _resize_image(image, image_size, method=None):
   return tf.image.resize_bicubic([image], [image_size, image_size])[0]
 
 
-def _decode_and_random_crop(image_bytes, image_shape, image_size, resize_method=None):
+def _decode_and_random_crop(image_bytes, original_shape, image_size, resize_method=None):
   """Make a random crop of image_size."""
   bbox = tf.constant([0.0, 0.0, 1.0, 1.0], dtype=tf.float32, shape=[1, 1, 4])
   image = distorted_bounding_box_crop(
       image_bytes,
-      image_shape,
+      original_shape,
       bbox,
       min_object_covered=0.1,
       aspect_ratio_range=(3. / 4, 4. / 3.),
       area_range=(0.08, 1.0),
       max_attempts=10,
       scope=None)
-  original_shape = image_shape  #tf.image.extract_jpeg_shape(image_bytes)
+  original_shape = original_shape
   bad = _at_least_x_are_equal(original_shape, tf.shape(image), 3)
 
   image = tf.cond(
       bad,
-      lambda: _decode_and_center_crop(image_bytes, image_shape, image_size),
+      lambda: _decode_and_center_crop(image_bytes, original_shape, image_size),
       lambda: _resize_image(image, image_size, resize_method))
 
   return image
 
 
-def _decode_and_center_crop(image_bytes, image_shape, image_size, resize_method=None):
+def _decode_and_center_crop(image_bytes, original_shape, image_size, resize_method=None):
   """Crops to center of image with padding then scales image_size."""
-  image_height = image_shape[0]
-  image_width = image_shape[1]
+  image_height = original_shape[0]
+  image_width = original_shape[1]
 
   padded_center_crop_size = tf.cast(
       ((image_size / (image_size + CROP_PADDING)) *
@@ -132,9 +129,6 @@ def _decode_and_center_crop(image_bytes, image_shape, image_size, resize_method=
 
   offset_height = ((image_height - padded_center_crop_size) + 1) // 2
   offset_width = ((image_width - padded_center_crop_size) + 1) // 2
-  # crop_window = tf.stack([offset_height, offset_width,
-  #                         padded_center_crop_size, padded_center_crop_size])
-  # image = tf.image.decode_and_crop_jpeg(image_bytes, crop_window, channels=3)
   image = tf.image.decode_image(image_bytes, channels=3)
   image = tf.image.crop_to_bounding_box(
     image,
@@ -151,7 +145,7 @@ def _flip(image):
 
 
 def preprocess_for_train(image_bytes,
-                         image_shape,
+                         original_shape,
                          use_bfloat16,
                          image_size=IMAGE_SIZE,
                          augment_name=None,
@@ -162,7 +156,7 @@ def preprocess_for_train(image_bytes,
 
   Args:
     image_bytes: `Tensor` representing an image binary of arbitrary size.
-    image_shape: `Tensor` specifying the shape of the raw image.
+    original_shape: `Tensor` specifying the shape of the raw image.
     use_bfloat16: `bool` for whether to use bfloat16.
     image_size: image size.
     augment_name: `string` that is the name of the augmentation method
@@ -179,7 +173,7 @@ def preprocess_for_train(image_bytes,
   Returns:
     A preprocessed image `Tensor`.
   """
-  image = _decode_and_random_crop(image_bytes, image_shape, image_size, resize_method)
+  image = _decode_and_random_crop(image_bytes, original_shape, image_size, resize_method)
   image = _flip(image)
   image = tf.reshape(image, [image_size, image_size, 3])
 
@@ -213,7 +207,7 @@ def preprocess_for_train(image_bytes,
 
 
 def preprocess_for_eval(image_bytes,
-                        image_shape,
+                        original_shape,
                         use_bfloat16,
                         image_size=IMAGE_SIZE,
                         resize_method=None):
@@ -221,7 +215,7 @@ def preprocess_for_eval(image_bytes,
 
   Args:
     image_bytes: `Tensor` representing an image binary of arbitrary size.
-    image_shape: `Tensor` specifying the shape of the raw image.
+    original_shape: `Tensor` specifying the shape of the raw image.
     use_bfloat16: `bool` for whether to use bfloat16.
     image_size: image size.
     resize_method: if None, use bicubic.
@@ -229,7 +223,7 @@ def preprocess_for_eval(image_bytes,
   Returns:
     A preprocessed image `Tensor`.
   """
-  image = _decode_and_center_crop(image_bytes, image_shape, image_size, resize_method)
+  image = _decode_and_center_crop(image_bytes, original_shape, image_size, resize_method)
   image = tf.reshape(image, [image_size, image_size, 3])
   image = tf.image.convert_image_dtype(
       image, dtype=tf.bfloat16 if use_bfloat16 else tf.float32)
@@ -237,7 +231,7 @@ def preprocess_for_eval(image_bytes,
 
 
 def preprocess_image(image_bytes,
-                     image_shape,
+                     original_shape,
                      is_training=False,
                      use_bfloat16=False,
                      image_size=IMAGE_SIZE,
@@ -249,7 +243,7 @@ def preprocess_image(image_bytes,
 
   Args:
     image_bytes: `Tensor` representing an image binary of arbitrary size.
-    image_shape: `Tensor` specifying the shape of the raw image.
+    original_shape: `Tensor` specifying the shape of the raw image.
     is_training: `bool` for whether the preprocessing is for training.
     use_bfloat16: `bool` for whether to use bfloat16.
     image_size: image size.
@@ -269,8 +263,8 @@ def preprocess_image(image_bytes,
   """
   if is_training:
     return preprocess_for_train(
-        image_bytes, image_shape, use_bfloat16, image_size, augment_name,
+        image_bytes, original_shape, use_bfloat16, image_size, augment_name,
         randaug_num_layers, randaug_magnitude, resize_method)
   else:
-    return preprocess_for_eval(image_bytes, image_shape, use_bfloat16, image_size,
+    return preprocess_for_eval(image_bytes, original_shape, use_bfloat16, image_size,
                                resize_method)

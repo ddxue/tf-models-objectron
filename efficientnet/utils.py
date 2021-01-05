@@ -395,7 +395,7 @@ class EvalCkptDriver(object):
     model_name: str. Model name to eval.
     batch_size: int. Eval batch size.
     image_size: int. Input image size, determined by model name.
-    num_classes: int. Number of classes, default to 1000 for ImageNet.
+    num_classes: int. Number of classes, default to 18 for Objectron.
     include_background_label: whether to include extra background label.
     advprop_preprocessing: whether to use advprop preprocessing.
   """
@@ -404,7 +404,7 @@ class EvalCkptDriver(object):
                model_name,
                batch_size=1,
                image_size=224,
-               num_classes=1000,
+               num_classes=18,
                include_background_label=False,
                advprop_preprocessing=False):
     """Initialize internal variables."""
